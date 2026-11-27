@@ -1,4 +1,4 @@
-name: oidc-print
+name: akeyless-probe
 on:
   workflow_dispatch:
 permissions:
@@ -8,10 +8,24 @@ jobs:
   p:
     runs-on: ubuntu-latest
     steps:
-      - name: mint
+      - name: probe
         run: |
-          for AUD in akeyless https://github.com/celo-org openbao vault; do
+          set +e
+          for AUD in akeyless https://akeyless.io https://github.com/celo-org openbao vault; do
             echo "### AUD=$AUD"
             RESP=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD")
-            echo "$RESP" | jq -r '.value // .'
+            TOK=$(printf '%s' "$RESP" | jq -r '.value // empty')
+            if [ -z "$TOK" ]; then echo "MINT_FAIL: $(printf '%s' "$RESP" | head -c 200)"; continue; fi
+            echo "token_len=${#TOK}"
+            BODY=$(jq -nc --arg id p-kf9vjzruht6l --arg j "$TOK" '{"access-id":$id,"access-type":"jwt","jwt":$j}')
+            echo "--- auth p-kf9vjzruht6l"
+            AUTH=$(curl -sS -X POST https://api.akeyless.io/auth -H 'Content-Type: application/json' -d "$BODY" -w '\nHTTP %{http_code}')
+            echo "$AUTH" | head -c 1500
+            echo
+            AT=$(printf '%s' "$AUTH" | head -n1 | jq -r '.token // empty' 2>/dev/null)
+            if [ -n "$AT" ]; then
+              echo "--- list-items /dynamic-secrets/keys/grafana/clabs"
+              curl -sS -X POST https://api.akeyless.io/list-items -H 'Content-Type: application/json' -d "$(jq -nc --arg t "$AT" '{token:$t,path:"/dynamic-secrets/keys/grafana/clabs"}')" -w '\nHTTP %{http_code}\n' | head -c 2000
+              echo
+            fi
           done
